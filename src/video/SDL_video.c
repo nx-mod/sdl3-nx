@@ -131,6 +131,9 @@ static VideoBootStrap *bootstrap[] = {
 #ifdef SDL_VIDEO_DRIVER_NGAGE
     &NGAGE_bootstrap,
 #endif
+#ifdef SDL_VIDEO_DRIVER_SWITCH
+    &SWITCH_bootstrap,
+#endif
 #ifdef SDL_VIDEO_DRIVER_KMSDRM
     &KMSDRM_bootstrap,
 #endif
