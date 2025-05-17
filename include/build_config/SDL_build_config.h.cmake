@@ -322,6 +322,7 @@
 
 #cmakedefine SDL_JOYSTICK_PRIVATE 1
 
+#cmakedefine SDL_JOYSTICK_SWITCH 1
 #cmakedefine SDL_HAPTIC_DUMMY 1
 #cmakedefine SDL_HAPTIC_LINUX 1
 #cmakedefine SDL_HAPTIC_IOKIT 1
