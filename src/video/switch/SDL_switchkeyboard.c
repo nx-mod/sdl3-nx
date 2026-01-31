@@ -32,7 +32,7 @@ static SDL_KeyboardID keyboard_id = 1;
 void SWITCH_InitKeyboard(void)
 {
     hidInitializeKeyboard();
-    SDL_AddKeyboard(keyboard_id, NULL, false);
+    SDL_AddKeyboard(keyboard_id, NULL);
 }
 
 void SWITCH_PollKeyboard(Uint64 timestamp)
@@ -59,7 +59,7 @@ void SWITCH_PollKeyboard(Uint64 timestamp)
 
 void SWITCH_QuitKeyboard(void)
 {
-    SDL_RemoveKeyboard(keyboard_id, false);
+    SDL_RemoveKeyboard(keyboard_id);
 }
 
 #endif /* SDL_VIDEO_DRIVER_SWITCH */

@@ -113,7 +113,7 @@ static SDL_VideoDevice *SWITCH_CreateDevice()
     device->StartTextInput = SWITCH_StartTextInput;
     device->StopTextInput = SWITCH_StopTextInput;
     device->HasScreenKeyboardSupport = SWITCH_HasScreenKeyboardSupport;
-    device->IsScreenKeyboardShown = SWITCH_IsScreenKeyboardShown;
+    device->screen_keyboard_shown = SWITCH_IsScreenKeyboardShown;
 
     device->PumpEvents = SWITCH_PumpEvents;
 

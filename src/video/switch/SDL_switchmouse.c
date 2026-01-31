@@ -42,7 +42,7 @@ void SWITCH_InitMouse(void)
     mouse->SetRelativeMouseMode = SWITCH_SetRelativeMouseMode;
     hidInitializeMouse();
 
-    SDL_AddMouse(1, NULL, false);
+    SDL_AddMouse(1, NULL);
 }
 
 void SWITCH_PollMouse(Uint64 timestamp)
@@ -102,7 +102,7 @@ void SWITCH_PollMouse(Uint64 timestamp)
 
 void SWITCH_QuitMouse(void)
 {
-    SDL_RemoveMouse(mouse_id, false);
+    SDL_RemoveMouse(mouse_id);
 }
 
 #endif /* SDL_VIDEO_DRIVER_SWITCH */
