@@ -19,7 +19,7 @@
 
 #include <stdlib.h>
 
-#ifdef HAVE_OPENGL
+#if defined(HAVE_OPENGL) && !defined(__SWITCH__)
 
 #include <SDL3/SDL_opengl.h>
 
