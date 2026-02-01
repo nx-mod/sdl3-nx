@@ -3481,7 +3481,10 @@ elseif(NINTENDO_SWITCH)
   sdl_glob_sources("${SDL3_SOURCE_DIR}/src/timer/switch/*.c")
   set(HAVE_SDL_TIMERS TRUE)
 
-  set(SDL_STATIC_PIC TRUE)
+  set(SDL_FSOPS_POSIX 1)
+  sdl_sources("${SDL3_SOURCE_DIR}/src/filesystem/posix/SDL_sysfsops.c")
+  set(HAVE_SDL_FSOPS TRUE)
+
 endif()
 
 sdl_sources(${SDL3_SOURCE_DIR}/src/dialog/SDL_dialog.c)
