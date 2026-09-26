@@ -12,7 +12,6 @@ extern void SWITCH_PollSwkb(Uint64 timestamp);
 extern void SWITCH_QuitSwkb(void);
 
 extern bool SWITCH_HasScreenKeyboardSupport(SDL_VideoDevice *_this);
-extern bool SWITCH_IsScreenKeyboardShown(SDL_VideoDevice *_this, SDL_Window *window);
 
 extern bool SWITCH_StartTextInput(SDL_VideoDevice *_this, SDL_Window *window, SDL_PropertiesID props);
 extern bool SWITCH_StopTextInput(SDL_VideoDevice *_this, SDL_Window *window);

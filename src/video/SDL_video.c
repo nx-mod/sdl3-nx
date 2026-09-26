@@ -302,6 +302,13 @@ static Uint32 SDL_DefaultGraphicsBackends(SDL_VideoDevice *_this)
         return SDL_WINDOW_OPENGL;
     }
 #endif
+#ifdef SDL_VIDEO_DRIVER_SWITCH
+    // EGL is the only way to get anything on screen: a window created without
+    // SDL_WINDOW_OPENGL could not be shown at all.
+    if (SDL_strcmp(_this->name, "Switch") == 0 && _this->GL_CreateContext) {
+        return SDL_WINDOW_OPENGL;
+    }
+#endif
     return 0;
 }
 

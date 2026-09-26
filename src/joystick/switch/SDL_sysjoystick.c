@@ -32,8 +32,14 @@ typedef struct SWITCHJoystickState
 {
     PadState pad;
     HidAnalogStickState sticks_old[2];
-    HidVibrationDeviceHandle vibrationDeviceHandles;
-    HidVibrationValue vibrationValues;
+    // Rumble motors (two, one per side, except on a lone Joy-Con) and the
+    // motion sensor, for whichever controller style is attached right now.
+    HidVibrationDeviceHandle vibration[2];
+    int nvibration;
+    HidSixAxisSensorHandle sixaxis;
+    bool sixaxis_ok;
+    bool sensors_on;
+    u64 sixaxis_sample;
     HidNpadButton *pad_mapping;
     u32 pad_type;
     u32 pad_type_prev;
@@ -42,6 +48,68 @@ typedef struct SWITCHJoystickState
 } SWITCHJoystickState;
 
 static SWITCHJoystickState state[JOYSTICK_COUNT];
+
+// Player 1 is also the handheld controller: padInitializeDefault reads both,
+// but rumble and motion need the id of the one actually in use.
+static HidNpadIdType SWITCH_NpadId(int index)
+{
+    if (index == 0 && padIsHandheld(&state[0].pad)) {
+        return HidNpadIdType_Handheld;
+    }
+    return (HidNpadIdType)(HidNpadIdType_No1 + index);
+}
+
+// The style set can have several bits; vibration and six-axis handles are
+// asked for with exactly one.
+static HidNpadStyleTag SWITCH_NpadStyle(HidNpadIdType id)
+{
+    static const HidNpadStyleTag order[] = {
+        HidNpadStyleTag_NpadFullKey, HidNpadStyleTag_NpadHandheld, HidNpadStyleTag_NpadJoyDual,
+        HidNpadStyleTag_NpadJoyLeft, HidNpadStyleTag_NpadJoyRight
+    };
+    const u32 set = hidGetNpadStyleSet(id);
+    for (size_t i = 0; i < SDL_arraysize(order); i++) {
+        if (set & order[i]) {
+            return order[i];
+        }
+    }
+    return (HidNpadStyleTag)0;
+}
+
+// (Re)acquire the rumble and motion handles for pad `index`, after it is set up
+// and whenever what is attached to it changes.
+static void SWITCH_SetupDevices(int index)
+{
+    SWITCHJoystickState *st = &state[index];
+    const HidNpadIdType id = SWITCH_NpadId(index);
+    const HidNpadStyleTag style = SWITCH_NpadStyle(id);
+
+    if (st->sixaxis_ok && st->sensors_on) {
+        hidStopSixAxisSensor(st->sixaxis);
+    }
+    st->nvibration = 0;
+    st->sixaxis_ok = false;
+    if (!style) {
+        return;
+    }
+
+    const bool single = style == HidNpadStyleTag_NpadJoyLeft || style == HidNpadStyleTag_NpadJoyRight;
+    if (R_SUCCEEDED(hidInitializeVibrationDevices(st->vibration, single ? 1 : 2, id, style))) {
+        st->nvibration = single ? 1 : 2;
+    }
+
+    // A pair of Joy-Cons has a sensor in each; the right one is the one that
+    // gets pointed at things.
+    HidSixAxisSensorHandle handles[2];
+    const int nsix = style == HidNpadStyleTag_NpadJoyDual ? 2 : 1;
+    if (R_SUCCEEDED(hidGetSixAxisSensorHandles(handles, nsix, id, style))) {
+        st->sixaxis = handles[nsix - 1];
+        st->sixaxis_ok = true;
+        if (st->sensors_on) {
+            hidStartSixAxisSensor(st->sixaxis);
+        }
+    }
+}
 
 static const HidNpadButton pad_mapping_default[] = {
     HidNpadButton_A, HidNpadButton_B, HidNpadButton_X, HidNpadButton_Y,
@@ -114,9 +182,7 @@ static void SWITCH_UpdateControllerSupport(Uint64 timestamp, bool handheld)
             } else {
                 state[i].pad_mapping = (HidNpadButton *)&pad_mapping_default;
             }
-            // update vibration stuff ?
-            hidInitializeVibrationDevices(&state[i].vibrationDeviceHandles, 1,
-                                          HidNpadIdType_No1 + i, state[i].pad_style);
+            SWITCH_SetupDevices(i);
             // reset sdl joysticks states
             SDL_SendJoystickAxis(timestamp, joy, 0, 0);
             SDL_SendJoystickAxis(timestamp, joy, 1, 0);
@@ -170,11 +236,12 @@ static bool SWITCH_JoystickInit(void)
         } else {
             state[i].pad_mapping = (HidNpadButton *)&pad_mapping_default;
         }
-        hidInitializeVibrationDevices(&state[i].vibrationDeviceHandles, 1,
-                                      HidNpadIdType_No1 + i, state[i].pad_style);
     }
 
+    // All eight, player 1 included: it used to be skipped here, so rumble on
+    // the main controller (and in handheld mode) never had a device to go to.
     for (int i = 0; i < JOYSTICK_COUNT; ++i) {
+        SWITCH_SetupDevices(i);
         SDL_PrivateJoystickAdded(SWITCH_JoystickGetDeviceInstanceID(i));
     }
 
@@ -242,22 +309,39 @@ static bool SWITCH_JoystickOpen(SDL_Joystick *joystick, int device_index)
 
     SDL_SetBooleanProperty(SDL_GetJoystickProperties(joystick), SDL_PROP_JOYSTICK_CAP_RUMBLE_BOOLEAN, true);
 
+    // Every first-party controller has a six-axis sensor. The rate is how
+    // often hid samples it; SDL only uses it to describe the sensor.
+    SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_GYRO, 200.0f);
+    SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_ACCEL, 200.0f);
+
     return true;
 }
 
 static bool SWITCH_JoystickRumble(SDL_Joystick *joystick, Uint16 low_frequency_rumble, Uint16 high_frequency_rumble)
 {
-    int index = joystick->instance_id - 1;
+    SWITCHJoystickState *st = &state[joystick->instance_id - 1];
 
-    state[index].vibrationValues.amp_low =
-        state[index].vibrationValues.amp_high = low_frequency_rumble == 0 ? 0.0f : 320.0f;
-    state[index].vibrationValues.freq_low =
-        low_frequency_rumble == 0 ? 160.0f : (float)low_frequency_rumble / 204;
-    state[index].vibrationValues.freq_high =
-        high_frequency_rumble == 0 ? 320.0f : (float)high_frequency_rumble / 204;
+    if (st->nvibration == 0) {
+        SWITCH_SetupDevices(joystick->instance_id - 1);
+        if (st->nvibration == 0) {
+            return SDL_Unsupported();
+        }
+    }
 
-    hidSendVibrationValues(&state[index].vibrationDeviceHandles, &state[index].vibrationValues, 1);
-
+    // SDL's two motors are strengths (0-65535); hid wants an amplitude (0-1)
+    // per band. 160 Hz and 320 Hz are the bands' default frequencies, and
+    // both sides of the controller get the same.
+    const HidVibrationValue v = {
+        .amp_low = low_frequency_rumble / 65535.0f,
+        .freq_low = 160.0f,
+        .amp_high = high_frequency_rumble / 65535.0f,
+        .freq_high = 320.0f,
+    };
+    const HidVibrationValue values[2] = { v, v };
+    const Result rc = hidSendVibrationValues(st->vibration, values, st->nvibration);
+    if (R_FAILED(rc)) {
+        return SDL_SetError("hidSendVibrationValues failed: 0x%x", rc);
+    }
     return true;
 }
 
@@ -278,7 +362,44 @@ static bool SWITCH_JoystickSendEffect(SDL_Joystick *joystick, const void *data, 
 
 static bool SWITCH_JoystickSetSensorsEnabled(SDL_Joystick *joystick, bool enabled)
 {
-    return SDL_Unsupported();
+    SWITCHJoystickState *st = &state[joystick->instance_id - 1];
+
+    if (st->sixaxis_ok && enabled != st->sensors_on) {
+        const Result rc = enabled ? hidStartSixAxisSensor(st->sixaxis) : hidStopSixAxisSensor(st->sixaxis);
+        if (R_FAILED(rc)) {
+            return SDL_SetError("six-axis sensor: 0x%x", rc);
+        }
+    }
+    st->sensors_on = enabled;
+    return true;
+}
+
+// hid reports angular velocity in turns per second and acceleration in g,
+// with x to the right, y away from the player and z up. SDL wants radians per
+// second and m/s^2, with x right, y up and z towards the player.
+static void SWITCH_SendSensors(Uint64 timestamp, SDL_Joystick *joystick, SWITCHJoystickState *st)
+{
+    HidSixAxisSensorState s;
+
+    if (!st->sensors_on || !st->sixaxis_ok ||
+        hidGetSixAxisSensorStates(st->sixaxis, &s, 1) == 0 ||
+        s.sampling_number == st->sixaxis_sample) {
+        return;
+    }
+    st->sixaxis_sample = s.sampling_number;
+
+    const float gyro[3] = {
+        s.angular_velocity.x * 2.0f * SDL_PI_F,
+        s.angular_velocity.z * 2.0f * SDL_PI_F,
+        -s.angular_velocity.y * 2.0f * SDL_PI_F,
+    };
+    const float accel[3] = {
+        s.acceleration.x * SDL_STANDARD_GRAVITY,
+        s.acceleration.z * SDL_STANDARD_GRAVITY,
+        -s.acceleration.y * SDL_STANDARD_GRAVITY,
+    };
+    SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_GYRO, timestamp, gyro, 3);
+    SDL_SendJoystickSensor(timestamp, joystick, SDL_SENSOR_ACCEL, timestamp, accel, 3);
 }
 
 /* Function to update the state of a joystick - called as a device poll.
@@ -334,6 +455,8 @@ static void SWITCH_JoystickUpdate(SDL_Joystick *joystick)
         state[index].sticks_old[1] = padGetStickPos(&state[index].pad, 1);
     }
 
+    SWITCH_SendSensors(timestamp, joystick, &state[index]);
+
     // handle buttons
     diff = state[index].pad.buttons_old ^ state[index].pad.buttons_cur;
     if (diff) {
@@ -351,6 +474,12 @@ static void SWITCH_JoystickUpdate(SDL_Joystick *joystick)
 /* Function to close a joystick after use */
 static void SWITCH_JoystickClose(SDL_Joystick *joystick)
 {
+    SWITCHJoystickState *st = &state[joystick->instance_id - 1];
+
+    if (st->sixaxis_ok && st->sensors_on) {
+        hidStopSixAxisSensor(st->sixaxis);
+    }
+    st->sensors_on = false;
 }
 
 /* Function to perform any system-specific joystick related cleanup */

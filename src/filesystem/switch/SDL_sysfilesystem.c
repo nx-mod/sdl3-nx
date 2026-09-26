@@ -28,6 +28,11 @@
 #include <limits.h>
 #include <sys/unistd.h>
 
+char *SDL_SYS_GetExeName(void)
+{
+    return NULL;  // like the other consoles: there is no executable name to report.
+}
+
 char *SDL_SYS_GetBasePath(void)
 {
     char *base_path = SDL_strdup("romfs:/");

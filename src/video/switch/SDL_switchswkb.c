@@ -43,11 +43,6 @@ bool SWITCH_HasScreenKeyboardSupport(SDL_VideoDevice *_this)
     return true;
 }
 
-bool SWITCH_IsScreenKeyboardShown(SDL_VideoDevice *_this, SDL_Window *window)
-{
-    return kbdShown;
-}
-
 static void SWITCH_EnterCb(const char *str, SwkbdDecidedEnterArg *arg)
 {
     if (arg->stringLen > 0) {
@@ -55,6 +50,7 @@ static void SWITCH_EnterCb(const char *str, SwkbdDecidedEnterArg *arg)
     }
 
     kbdShown = false;
+    SDL_SendScreenKeyboardHidden();
 }
 
 static void SWITCH_CancelCb(void)
@@ -91,6 +87,7 @@ bool SWITCH_StartTextInput(SDL_VideoDevice *_this, SDL_Window *window, SDL_Prope
         swkbdInlineUpdate(&kbd, NULL);
         swkbdInlineAppear(&kbd, &kbdAppearArg);
         kbdShown = true;
+        SDL_SendScreenKeyboardShown();
     }
 
     return true;
@@ -104,6 +101,7 @@ bool SWITCH_StopTextInput(SDL_VideoDevice *_this, SDL_Window *window)
 
     kbdShown = false;
     current_window = NULL;
+    SDL_SendScreenKeyboardHidden();
 
     return true;
 }

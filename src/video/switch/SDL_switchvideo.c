@@ -38,6 +38,59 @@
 static SDL_Window *switch_window = NULL;
 static AppletOperationMode operationMode;
 
+// ---- application lifecycle ----
+// libnx starts applications in AppletFocusHandlingMode_SuspendHomeSleep: the
+// process is frozen while the HOME menu is up or the console sleeps, and is
+// never told. SuspendHomeSleepNotify suspends exactly the same way but also
+// delivers the focus changes, which is all SDL needs to send its background
+// and foreground events. The process is still frozen in between, so both
+// arrive together when it resumes - it is told it was away, not warned first.
+static AppletHookCookie applet_hook;
+static bool in_background = false;
+
+static void SWITCH_SetBackground(bool background)
+{
+    if (background == in_background) {
+        return;
+    }
+    in_background = background;
+    if (background) {
+        SDL_SetKeyboardFocus(NULL);
+        SDL_SetMouseFocus(NULL);
+        SDL_OnApplicationWillEnterBackground();
+        SDL_OnApplicationDidEnterBackground();
+    } else {
+        SDL_OnApplicationWillEnterForeground();
+        SDL_OnApplicationDidEnterForeground();
+        if (switch_window) {
+            SDL_SetMouseFocus(switch_window);
+            SDL_SetKeyboardFocus(switch_window);
+        }
+    }
+}
+
+// Runs inside appletMainLoop, which SWITCH_PumpEvents calls on the main thread.
+static void SWITCH_AppletHook(AppletHookType hook, void *param)
+{
+    (void)param;
+    if (hook != AppletHookType_OnFocusState) {
+        return;
+    }
+    // OutOfFocus is a library applet over the app - the inline software
+    // keyboard among them - which is not the app going away. Only the HOME
+    // menu and sleep (Background) are.
+    switch (appletGetFocusState()) {
+    case AppletFocusState_InFocus:
+        SWITCH_SetBackground(false);
+        break;
+    case AppletFocusState_Background:
+        SWITCH_SetBackground(true);
+        break;
+    default:
+        break;
+    }
+}
+
 static bool SWITCH_VideoInit(SDL_VideoDevice *_this);
 static void SWITCH_VideoQuit(SDL_VideoDevice *_this);
 static bool SWITCH_GetDisplayModes(SDL_VideoDevice *_this, SDL_VideoDisplay *display);
@@ -115,7 +168,6 @@ static SDL_VideoDevice *SWITCH_CreateDevice()
     device->StartTextInput = SWITCH_StartTextInput;
     device->StopTextInput = SWITCH_StopTextInput;
     device->HasScreenKeyboardSupport = SWITCH_HasScreenKeyboardSupport;
-    device->screen_keyboard_shown = SWITCH_IsScreenKeyboardShown;
 
     device->PumpEvents = SWITCH_PumpEvents;
 
@@ -165,6 +217,14 @@ bool SWITCH_VideoInit(SDL_VideoDevice *_this)
     // init software keyboard
     SWITCH_InitSwkb();
 
+    // lifecycle events; the mode only exists for applications, applets
+    // already receive focus changes
+    in_background = false;
+    appletHook(&applet_hook, SWITCH_AppletHook, NULL);
+    if (appletGetAppletType() == AppletType_Application) {
+        appletSetFocusHandlingMode(AppletFocusHandlingMode_SuspendHomeSleepNotify);
+    }
+
     return true;
 }
 
@@ -187,6 +247,11 @@ void SWITCH_VideoQuit(SDL_VideoDevice *_this)
     SWITCH_QuitSwkb();
     // exit psm service
     psmExit();
+    // back to libnx's default focus handling
+    appletUnhook(&applet_hook);
+    if (appletGetAppletType() == AppletType_Application) {
+        appletSetFocusHandlingMode(AppletFocusHandlingMode_SuspendHomeSleep);
+    }
 }
 
 static bool SWITCH_GetDisplayModes(SDL_VideoDevice *_this, SDL_VideoDisplay *display)
@@ -360,9 +425,10 @@ static void SWITCH_PumpEvents(SDL_VideoDevice *_this)
     Uint64 timestamp = SDL_GetTicksNS();
 
     if (!appletMainLoop()) {
-        SDL_Event ev;
-        ev.type = SDL_EVENT_QUIT;
-        SDL_PushEvent(&ev);
+        // Closed from the HOME menu: say so before the quit, so the app can
+        // save (SDL_EVENT_TERMINATING).
+        SDL_OnApplicationWillTerminate();
+        SDL_SendQuit();
         return;
     }
 
