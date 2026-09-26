@@ -12191,6 +12191,11 @@ static bool VULKAN_INTERNAL_GetDeviceRank(
      * example of a non-conformant driver that's built by default.
      * -flibit
      */
+#ifdef __SWITCH__
+    /* Mesa's NVK is the only Vulkan driver on the Switch, and it is not
+     * conformant on Maxwell: refusing it would mean no SDL_GPU at all. */
+    isConformant = true;
+#endif
     if (!isConformant) {
         return 0;
     }

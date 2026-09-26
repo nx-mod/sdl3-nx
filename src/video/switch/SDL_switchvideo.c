@@ -30,6 +30,7 @@
 #include "SDL_switchkeyboard.h"
 #include "SDL_switchmouse_c.h"
 #include "SDL_switchopengles.h"
+#include "SDL_switchvulkan.h"
 #include "SDL_switchswkb.h"
 #include "SDL_switchtouch.h"
 #include "SDL_switchvideo.h"
@@ -153,6 +154,14 @@ static SDL_VideoDevice *SWITCH_CreateDevice()
     device->MinimizeWindow = SWITCH_MinimizeWindow;
     device->RestoreWindow = SWITCH_RestoreWindow;
     device->DestroyWindow = SWITCH_DestroyWindow;
+
+#ifdef SDL_VIDEO_VULKAN
+    device->Vulkan_LoadLibrary = SWITCH_Vulkan_LoadLibrary;
+    device->Vulkan_UnloadLibrary = SWITCH_Vulkan_UnloadLibrary;
+    device->Vulkan_GetInstanceExtensions = SWITCH_Vulkan_GetInstanceExtensions;
+    device->Vulkan_CreateSurface = SWITCH_Vulkan_CreateSurface;
+    device->Vulkan_DestroySurface = SWITCH_Vulkan_DestroySurface;
+#endif
 
     device->GL_LoadLibrary = SWITCH_GLES_LoadLibrary;
     device->GL_GetProcAddress = SWITCH_GLES_GetProcAddress;
@@ -325,8 +334,10 @@ static bool SWITCH_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_
         return SDL_SetError("Could not set NWindow dimensions: 0x%x", rc);
     }
 
-    window_data->egl_surface = SDL_EGL_CreateSurface(_this, window, nWindow);
-    if (window_data->egl_surface == EGL_NO_SURFACE) {
+    if (window->flags & SDL_WINDOW_VULKAN) {
+        // the Vulkan swapchain configures the window's buffers itself
+        window_data->egl_surface = EGL_NO_SURFACE;
+    } else if ((window_data->egl_surface = SDL_EGL_CreateSurface(_this, window, nWindow)) == EGL_NO_SURFACE) {
         return SDL_SetError("Could not create GLES window surface");
     }
 
