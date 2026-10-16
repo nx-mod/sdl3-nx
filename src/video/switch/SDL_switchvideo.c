@@ -318,7 +318,11 @@ static bool SWITCH_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_
         return SDL_SetError("Switch only supports one window");
     }
 
-    if (!_this->egl_data) {
+    // Only an OpenGL window takes the screen with an EGL surface, as on the
+    // desktop: an SDL_GPU window leaves it to the GPU's swapchain (deko3d or
+    // Vulkan), which configures the window's buffers itself.
+    const bool opengl = (window->flags & SDL_WINDOW_OPENGL) && !(window->flags & SDL_WINDOW_VULKAN);
+    if (opengl && !_this->egl_data) {
         return SDL_SetError("EGL not initialized");
     }
 
@@ -334,8 +338,7 @@ static bool SWITCH_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_
         return SDL_SetError("Could not set NWindow dimensions: 0x%x", rc);
     }
 
-    if (window->flags & SDL_WINDOW_VULKAN) {
-        // the Vulkan swapchain configures the window's buffers itself
+    if (!opengl) {
         window_data->egl_surface = EGL_NO_SURFACE;
     } else if ((window_data->egl_surface = SDL_EGL_CreateSurface(_this, window, nWindow)) == EGL_NO_SURFACE) {
         return SDL_SetError("Could not create GLES window surface");
