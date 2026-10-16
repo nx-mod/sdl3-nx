@@ -1204,6 +1204,7 @@ extern "C" {
 extern SDL_GPUBootstrap VulkanDriver;
 extern SDL_GPUBootstrap D3D12Driver;
 extern SDL_GPUBootstrap MetalDriver;
+extern SDL_GPUBootstrap Deko3DDriver;
 extern SDL_GPUBootstrap PrivateGPUDriver;
 
 #ifdef __cplusplus

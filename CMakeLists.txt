@@ -3645,6 +3645,13 @@ if(SDL_GPU)
     set(SDL_GPU_VULKAN 1)
     set(HAVE_SDL_GPU TRUE)
   endif()
+  if(NINTENDO_SWITCH)
+    # SDL_GPU on deko3d, the Switch's native graphics API (sdl3-nx)
+    sdl_glob_sources("${SDL3_SOURCE_DIR}/src/gpu/deko3d/*.c")
+    sdl_link_dependency(deko3d LIBS deko3d)
+    set(SDL_GPU_DEKO3D 1)
+    set(HAVE_SDL_GPU TRUE)
+  endif()
   if(SDL_VIDEO_METAL)
     sdl_glob_sources(
       "${SDL3_SOURCE_DIR}/src/gpu/metal/*.m"

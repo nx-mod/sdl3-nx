@@ -324,6 +324,9 @@ static const SDL_GPUBootstrap *backends[] = {
 #ifdef SDL_GPU_VULKAN
     &VulkanDriver,
 #endif
+#ifdef SDL_GPU_DEKO3D
+    &Deko3DDriver,
+#endif
     NULL
 };
 #endif // !SDL_GPU_DISABLED
