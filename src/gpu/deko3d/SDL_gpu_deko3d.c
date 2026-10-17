@@ -924,6 +924,14 @@ static SDL_GPUTexture *DEKO3D_CreateTexture(SDL_GPURenderer *driverData, const S
     if (info->usage & (SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
         maker.flags |= DkImageFlags_UsageRender | DkImageFlags_HwCompression;
     }
+    // Blits (SDL_BlitGPUTexture, mipmap generation) run on the 2D engine,
+    // which needs the image laid out for it: without the flag deko3d's
+    // debug build refuses the blit and the release build faults the GPU.
+    // Every format but the 96-bit ones can, and no 3D image.
+    if ((info->usage & (SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET)) && texture->type != DkImageType_3D &&
+        format != DkImageFormat_RGB32_Float && format != DkImageFormat_RGB32_Uint && format != DkImageFormat_RGB32_Sint) {
+        maker.flags |= DkImageFlags_Usage2DEngine;
+    }
     if (info->usage & (SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ |
                        SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE)) {
         maker.flags |= DkImageFlags_UsageLoadStore;
@@ -2015,7 +2023,7 @@ static bool DEKO3D_ClaimWindow(SDL_GPURenderer *driverData, SDL_Window *window)
         texture->common.info.sample_count = SDL_GPU_SAMPLECOUNT_1;
         DkImageLayoutMaker maker;
         dkImageLayoutMakerDefaults(&maker, renderer->device);
-        maker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression;
+        maker.flags = DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_HwCompression | DkImageFlags_Usage2DEngine; // blit target
         maker.format = DkImageFormat_RGBA8_Unorm;
         maker.dimensions[0] = data->width;
         maker.dimensions[1] = data->height;
