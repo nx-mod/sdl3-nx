@@ -963,8 +963,12 @@ static SDL_GPUTexture *DEKO3D_CreateTexture(SDL_GPURenderer *driverData, const S
     if (texture->type == DkImageType_Cubemap) {
         maker.dimensions[2] = 6;
     }
+    // No DkImageFlags_HwCompression: the copy engine (downloads, texture
+    // copies) reads a compressed surface's raw bytes, and nouveau saw the
+    // same with depth (nfsmw-nx's HowToDeko3d.md, 5.10). Worth measuring
+    // again for color targets that are never copied.
     if (info->usage & (SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
-        maker.flags |= DkImageFlags_UsageRender | DkImageFlags_HwCompression;
+        maker.flags |= DkImageFlags_UsageRender;
     }
     // Blits (SDL_BlitGPUTexture, mipmap generation) run on the 2D engine,
     // which needs the image laid out for it: without the flag deko3d's
@@ -1604,9 +1608,10 @@ static void DEKO3D_BeginRenderPass(SDL_GPUCommandBuffer *commandBuffer, const SD
         if (colorTargetInfos[i].load_op == SDL_GPU_LOADOP_CLEAR) {
             const SDL_FColor *c = &colorTargetInfos[i].clear_color;
             dkCmdBufClearColorFloat(cb->cmd, i, DkColorMask_RGBA, c->r, c->g, c->b, c->a);
-        } else if (colorTargetInfos[i].load_op == SDL_GPU_LOADOP_DONT_CARE) {
-            dkCmdBufDiscardColor(cb->cmd, i);
         }
+        // LOADOP_DONT_CARE keeps what's there: dkCmdBufDiscardColor really
+        // throws it away, where desktop drivers in practice keep it, and
+        // callers come to rely on that.
     }
     if (depthStencilTargetInfo) {
         bool clearDepth = depthStencilTargetInfo->load_op == SDL_GPU_LOADOP_CLEAR;
