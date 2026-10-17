@@ -224,6 +224,7 @@ typedef struct DKO_CommandBuffer
     DKO_GraphicsPipeline *graphics;
     DKO_ComputePipeline *compute;
     DkIdxFormat indexFormat;
+    Uint32 indexCount; // indices the bound index buffer holds past its offset
     Uint8 stencilReference;
     Uint32 rwStorageTextureBase;
     Uint32 rwStorageBufferBase;
@@ -1483,6 +1484,7 @@ static SDL_GPUCommandBuffer *DEKO3D_AcquireCommandBuffer(SDL_GPURenderer *driver
     cb->graphics = NULL;
     cb->compute = NULL;
     cb->indexFormat = DkIdxFormat_Uint16;
+    cb->indexCount = 0;
     cb->stencilReference = 0;
     cb->numResolves = 0;
     SDL_zero(cb->common);
@@ -1690,6 +1692,8 @@ static void DEKO3D_BindIndexBuffer(SDL_GPUCommandBuffer *commandBuffer, const SD
     DKO_Buffer *buffer = (DKO_Buffer *)binding->buffer;
     cb->indexFormat = indexElementSize == SDL_GPU_INDEXELEMENTSIZE_32BIT ? DkIdxFormat_Uint32 : DkIdxFormat_Uint16;
     dkCmdBufBindIdxBuffer(cb->cmd, cb->indexFormat, buffer->gpu + binding->offset);
+    Uint32 elementSize = indexElementSize == SDL_GPU_INDEXELEMENTSIZE_32BIT ? 4 : 2;
+    cb->indexCount = binding->offset < buffer->size ? (buffer->size - binding->offset) / elementSize : 0;
 }
 
 static void DKO_BindSamplers(DKO_CommandBuffer *cb, DkStage stage, Uint32 firstSlot, const SDL_GPUTextureSamplerBinding *bindings, Uint32 numBindings)
@@ -1775,6 +1779,15 @@ static void DEKO3D_PushFragmentUniformData(SDL_GPUCommandBuffer *commandBuffer, 
     DKO_PushUniforms((DKO_CommandBuffer *)commandBuffer, DkStage_Fragment, slotIndex, data, length);
 }
 
+static void DKO_IndexOverrun(Uint32 firstIndex, Uint32 numIndices, Uint32 bound)
+{
+    static SDL_AtomicInt reported;
+    if (SDL_AtomicIncRef(&reported) < 8) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "deko3d: indexed draw of %u indices from %u reads past its index buffer (%u); clamped", numIndices,
+                    firstIndex, bound);
+    }
+}
+
 static void DEKO3D_DrawPrimitives(SDL_GPUCommandBuffer *commandBuffer, Uint32 numVertices, Uint32 numInstances, Uint32 firstVertex, Uint32 firstInstance)
 {
     DKO_CommandBuffer *cb = (DKO_CommandBuffer *)commandBuffer;
@@ -1787,6 +1800,18 @@ static void DEKO3D_DrawIndexedPrimitives(SDL_GPUCommandBuffer *commandBuffer, Ui
                                          Uint32 firstInstance)
 {
     DKO_CommandBuffer *cb = (DKO_CommandBuffer *)commandBuffer;
+    // deko3d 0.5.0 sets no index limit (the register is left at the top of
+    // the address space), so indices past the bound buffer are fetched from
+    // whatever follows: an unmapped page faults the GPU mid-draw. Vulkan
+    // keeps them inside the buffer; so does this.
+    if (firstIndex >= cb->indexCount) {
+        DKO_IndexOverrun(firstIndex, numIndices, cb->indexCount);
+        return;
+    }
+    if (numIndices > cb->indexCount - firstIndex) {
+        DKO_IndexOverrun(firstIndex, numIndices, cb->indexCount);
+        numIndices = cb->indexCount - firstIndex;
+    }
     if (cb->graphics) {
         dkCmdBufDrawIndexed(cb->cmd, cb->graphics->primitive, numIndices, numInstances, firstIndex, vertexOffset, firstInstance);
     }
