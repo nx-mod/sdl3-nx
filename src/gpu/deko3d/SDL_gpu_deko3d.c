@@ -145,6 +145,9 @@ typedef struct DKO_Sampler
 
 typedef struct DKO_Shader
 {
+    // The caller's reference and one per pipeline: SDL lets a shader be
+    // released as soon as its pipelines are made, and they still bind it.
+    SDL_AtomicInt references;
     DkShader shader;
     Uint32 codeOffset;
     Uint32 codeSize;
@@ -1101,6 +1104,7 @@ static bool DKO_LoadShader(DKO_Renderer *renderer, const Uint8 *code, size_t siz
     }
     out->codeOffset = offset;
     out->codeSize = header.codeSize;
+    SDL_SetAtomicInt(&out->references, 1);
     return true;
 }
 
@@ -1126,12 +1130,18 @@ static SDL_GPUShader *DEKO3D_CreateShader(SDL_GPURenderer *driverData, const SDL
     return (SDL_GPUShader *)shader;
 }
 
+// Drops a reference; the last one gives the code back (once the GPU is done).
+static void DKO_UnrefShader(DKO_Renderer *renderer, DKO_Shader *shader)
+{
+    if (shader && SDL_AddAtomicInt(&shader->references, -1) == 1) {
+        DKO_DeferValue(renderer, DKO_RELEASE_CODE, shader->codeOffset, shader->codeSize);
+        DKO_DeferMemory(renderer, shader);
+    }
+}
+
 static void DEKO3D_ReleaseShader(SDL_GPURenderer *driverData, SDL_GPUShader *handle)
 {
-    DKO_Renderer *renderer = (DKO_Renderer *)driverData;
-    DKO_Shader *shader = (DKO_Shader *)handle;
-    DKO_DeferValue(renderer, DKO_RELEASE_CODE, shader->codeOffset, shader->codeSize);
-    DKO_DeferMemory(renderer, shader);
+    DKO_UnrefShader((DKO_Renderer *)driverData, (DKO_Shader *)handle);
 }
 
 static SDL_GPUComputePipeline *DEKO3D_CreateComputePipeline(SDL_GPURenderer *driverData, const SDL_GPUComputePipelineCreateInfo *info)
@@ -1175,6 +1185,8 @@ static SDL_GPUGraphicsPipeline *DEKO3D_CreateGraphicsPipeline(SDL_GPURenderer *d
     }
     pipeline->vertex = (DKO_Shader *)info->vertex_shader;
     pipeline->fragment = (DKO_Shader *)info->fragment_shader;
+    SDL_AddAtomicInt(&pipeline->vertex->references, 1);
+    SDL_AddAtomicInt(&pipeline->fragment->references, 1);
     pipeline->primitive = DKO_Primitive(info->primitive_type);
 
     pipeline->common.num_vertex_samplers = pipeline->vertex->numSamplers;
@@ -1295,7 +1307,11 @@ static SDL_GPUGraphicsPipeline *DEKO3D_CreateGraphicsPipeline(SDL_GPURenderer *d
 
 static void DEKO3D_ReleaseGraphicsPipeline(SDL_GPURenderer *driverData, SDL_GPUGraphicsPipeline *handle)
 {
-    DKO_DeferMemory((DKO_Renderer *)driverData, handle);
+    DKO_Renderer *renderer = (DKO_Renderer *)driverData;
+    DKO_GraphicsPipeline *pipeline = (DKO_GraphicsPipeline *)handle;
+    DKO_UnrefShader(renderer, pipeline->vertex);
+    DKO_UnrefShader(renderer, pipeline->fragment);
+    DKO_DeferMemory(renderer, handle);
 }
 
 static void DEKO3D_SetBufferName(SDL_GPURenderer *driverData, SDL_GPUBuffer *buffer, const char *text)
