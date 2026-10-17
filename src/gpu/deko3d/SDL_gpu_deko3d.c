@@ -1235,7 +1235,9 @@ static SDL_GPUGraphicsPipeline *DEKO3D_CreateGraphicsPipeline(SDL_GPURenderer *d
     pipeline->multisample.mode = DKO_MsMode(info->multisample_state.sample_count);
     pipeline->multisample.rasterizerMode = pipeline->multisample.mode;
     pipeline->multisample.alphaToCoverageEnable = info->multisample_state.enable_alpha_to_coverage;
-    pipeline->sampleMask = info->multisample_state.enable_mask ? info->multisample_state.sample_mask : 0xFFFFFFFF;
+    // The register has a bit per sample, 16 at most; a set bit above those
+    // is a method error (GR exception) when the pipeline is bound.
+    pipeline->sampleMask = (info->multisample_state.enable_mask ? info->multisample_state.sample_mask : 0xFFFFFFFF) & 0xFFFF;
     return (SDL_GPUGraphicsPipeline *)pipeline;
 }
 
