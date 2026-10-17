@@ -1901,6 +1901,20 @@ static Uint32 DKO_BytesPerRow(SDL_GPUTextureFormat format, Uint32 pixels)
     return blocks * SDL_GPUTextureFormatTexelBlockSize(format);
 }
 
+// SDL's pixels per row and rows per layer as deko3d's DkCopyBuf: the row
+// pitch and the layer stride, both in bytes (0 = tightly packed). width is
+// the copy's, for a layer stride given without a row length.
+static void DKO_CopyPitch(DkCopyBuf *copy, SDL_GPUTextureFormat format, Uint32 pixelsPerRow, Uint32 rowsPerLayer, Uint32 width)
+{
+    copy->rowLength = pixelsPerRow ? DKO_BytesPerRow(format, pixelsPerRow) : 0;
+    copy->imageHeight = 0;
+    if (rowsPerLayer) {
+        Uint32 blockHeight = (Uint32)SDL_max(Texture_GetBlockHeight(format), 1);
+        Uint32 rowBytes = copy->rowLength ? copy->rowLength : DKO_BytesPerRow(format, width);
+        copy->imageHeight = (rowsPerLayer + blockHeight - 1) / blockHeight * rowBytes;
+    }
+}
+
 static void DEKO3D_BeginCopyPass(SDL_GPUCommandBuffer *commandBuffer)
 {
     DKO_PassBarrier((DKO_CommandBuffer *)commandBuffer, true);
@@ -1948,8 +1962,7 @@ static void DEKO3D_UploadToTexture(SDL_GPUCommandBuffer *commandBuffer, const SD
     DKO_UseTransfer(cb, transfer);
     DkCopyBuf copy;
     copy.addr = DKO_Gpu(&transfer->alloc) + source->offset;
-    copy.rowLength = source->pixels_per_row ? DKO_BytesPerRow(format, source->pixels_per_row) : 0;
-    copy.imageHeight = source->rows_per_layer;
+    DKO_CopyPitch(&copy, format, source->pixels_per_row, source->rows_per_layer, destination->w);
     DkImageView view;
     DKO_View(&view, texture, destination->mip_level, 0, false);
     view.layerCount = 0;
@@ -1970,8 +1983,7 @@ static void DEKO3D_DownloadFromTexture(SDL_GPUCommandBuffer *commandBuffer, cons
     cb->downloads = true;
     DkCopyBuf copy;
     copy.addr = DKO_Gpu(&transfer->alloc) + destination->offset;
-    copy.rowLength = destination->pixels_per_row ? DKO_BytesPerRow(format, destination->pixels_per_row) : 0;
-    copy.imageHeight = destination->rows_per_layer;
+    DKO_CopyPitch(&copy, format, destination->pixels_per_row, destination->rows_per_layer, source->w);
     DkImageView view;
     DKO_View(&view, texture, source->mip_level, 0, false);
     view.layerCount = 0;
