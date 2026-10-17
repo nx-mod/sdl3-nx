@@ -56,6 +56,7 @@
 #define DKO_HEAP_BLOCK_SIZE (32u * 1024 * 1024)
 #define DKO_CHUNK_SIZE (256u * 1024)
 #define DKO_CODE_SIZE (32u * 1024 * 1024)
+#define DKO_PER_WARP_SCRATCH (64u * 1024)
 #define DKO_MAX_IMAGE_DESCRIPTORS 8192
 #define DKO_MAX_SAMPLER_DESCRIPTORS 2048
 #define DKO_MAX_SWAPCHAIN_IMAGES 3
@@ -1030,6 +1031,19 @@ static bool DKO_LoadShader(DKO_Renderer *renderer, const Uint8 *code, size_t siz
     SDL_memcpy(&header, code, sizeof(header));
     if (header.magic != 0x48534b44 || (size_t)header.controlSize + header.codeSize > size) {
         return SDL_SetError("deko3d: shader is not a DKSH");
+    }
+    // Each program header: type, entry point, GPRs, constbuf1 offset and
+    // size, then the scratch memory it needs per warp.
+    for (Uint32 i = 0; i < header.programCount; i++) {
+        Uint32 scratch;
+        size_t at = (size_t)header.programsOffset + i * 64 + 5 * sizeof(Uint32);
+        if (at + sizeof(scratch) <= header.controlSize) {
+            SDL_memcpy(&scratch, code + at, sizeof(scratch));
+            if (scratch > DKO_PER_WARP_SCRATCH) {
+                SDL_LogError(SDL_LOG_CATEGORY_GPU, "deko3d: a shader needs %u bytes of scratch per warp, the queue has %u; its draws will trap",
+                             scratch, DKO_PER_WARP_SCRATCH);
+            }
+        }
     }
     Uint32 offset;
     SDL_LockMutex(renderer->stateLock);
@@ -2360,6 +2374,11 @@ static SDL_GPUDevice *DEKO3D_CreateDevice(bool debugMode, bool preferLowPower, S
     DkQueueMaker queueMaker;
     dkQueueMakerDefaults(&queueMaker, renderer->device);
     queueMaker.flags = DkQueueFlags_Graphics | DkQueueFlags_Compute;
+    // Shaders that spill (big translated ones reach 96 registers and want
+    // 26-32 KiB per warp) need this much scratch; deko3d's default (2 KiB)
+    // traps the draw (GR TRAP at the end of the vertices). Costs this times
+    // every warp the GPU runs at once: 8 MiB.
+    queueMaker.perWarpScratchMemorySize = DKO_PER_WARP_SCRATCH;
     renderer->queue = dkQueueCreate(&queueMaker);
     renderer->submitLock = SDL_CreateMutex();
     renderer->stateLock = SDL_CreateMutex();
