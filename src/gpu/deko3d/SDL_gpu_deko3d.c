@@ -1434,6 +1434,19 @@ static SDL_GPUCommandBuffer *DEKO3D_AcquireCommandBuffer(SDL_GPURenderer *driver
     cb->numResolves = 0;
     SDL_zero(cb->common);
 
+    // A cleared DkCmdBuf goes on writing at the start of the last chunk it
+    // was given, and DKO_Recycle has handed that chunk back to the pool, so
+    // another command buffer may be writing there too (the GPU then fetches
+    // garbage: a PBDMA error, "GPU rejected command list"). Give it memory
+    // of its own before anything is recorded.
+    DKO_Alloc chunk;
+    if (!DKO_TakeChunk(renderer, &chunk)) {
+        SDL_SetError("deko3d: no command memory");
+        return NULL;
+    }
+    DKO_KeepChunk(cb, &chunk);
+    dkCmdBufAddMemory(cb->cmd, chunk.block->memblock, chunk.offset, chunk.size);
+
     // every command buffer starts with the descriptor sets bound
     dkCmdBufBindImageDescriptorSet(cb->cmd, renderer->imageDescriptors, DKO_MAX_IMAGE_DESCRIPTORS);
     dkCmdBufBindSamplerDescriptorSet(cb->cmd, renderer->samplerDescriptors, DKO_MAX_SAMPLER_DESCRIPTORS);
