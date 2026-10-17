@@ -55,6 +55,11 @@
 
 #define DKO_HEAP_BLOCK_SIZE (32u * 1024 * 1024)
 #define DKO_CHUNK_SIZE (256u * 1024)
+// Kept out of what each command chunk offers deko3d: 0.5.0's
+// dkCmdBufBindVtxBuffers writes a word more per buffer than it reserves, and
+// writes past a chunk's end land in the next chunk (nfsmw-nx's
+// HowToDeko3d.md, item 17).
+#define DKO_CHUNK_SLACK 256u
 #define DKO_CODE_SIZE (32u * 1024 * 1024)
 #define DKO_PER_WARP_SCRATCH (64u * 1024)
 #define DKO_MAX_IMAGE_DESCRIPTORS 8192
@@ -867,6 +872,37 @@ static void DEKO3D_UnmapTransferBuffer(SDL_GPURenderer *driverData, SDL_GPUTrans
     (void)handle; // uncached memory: nothing to flush
 }
 
+// deko3d 0.5.0's tile height bug: when level 0 has 6 to 8 rows of 8-row
+// blocks, its layout and its descriptor disagree about the tile height, so
+// level 0's second column of blocks lands on mip 1. A custom, shrunk tile
+// size makes them agree (WWHD's image_tile_size_fix, via nfsmw-nx's
+// HowToDeko3d.md, item 3).
+static void DKO_FixTileSize(DkImageLayoutMaker *maker, Uint32 height)
+{
+    if (maker->flags & (DkImageFlags_PitchLinear | DkImageFlags_CustomTileSize | DkImageFlags_UsageVideo)) {
+        return;
+    }
+    if (maker->type == DkImageType_1D || maker->type == DkImageType_1DArray || maker->type == DkImageType_3D || maker->type == DkImageType_Buffer) {
+        return;
+    }
+    bool blocks4 = maker->format >= DkImageFormat_RGB_BC1 && maker->format <= DkImageFormat_RGBA_BC6H_UF16_Float;
+    Uint32 rows = blocks4 ? (height + 3) / 4 : height; // level 0's height in blocks
+    if ((maker->type == DkImageType_2DMS || maker->type == DkImageType_2DMSArray) && (maker->msMode == DkMsMode_4x || maker->msMode == DkMsMode_8x)) {
+        rows *= 2;
+    }
+    Uint32 gobs = (rows + rows / 2 + 7) / 8; // deko3d's pickTileSize
+    Uint32 tile = gobs >= 16 ? 4 : gobs >= 8 ? 3 : gobs >= 4 ? 2 : gobs >= 2 ? 1 : 0;
+    Uint32 shrunk = tile; // its level-0 shrink (calcLevelOffset)
+    while (shrunk && (8u << (shrunk - 1)) >= rows) {
+        shrunk--;
+    }
+    if (shrunk == tile) {
+        return;
+    }
+    maker->flags |= DkImageFlags_CustomTileSize;
+    maker->tileSize = (DkTileSize)shrunk;
+}
+
 static Uint32 DKO_WriteImageDescriptor(DKO_Renderer *renderer, DKO_Texture *texture, bool loadStore)
 {
     SDL_LockMutex(renderer->stateLock);
@@ -939,6 +975,7 @@ static SDL_GPUTexture *DEKO3D_CreateTexture(SDL_GPURenderer *driverData, const S
         maker.flags |= DkImageFlags_UsageLoadStore;
         maker.flags &= ~DkImageFlags_HwCompression;
     }
+    DKO_FixTileSize(&maker, info->height);
     dkImageLayoutInitialize(&texture->layout, &maker);
 
     Uint32 size = (Uint32)dkImageLayoutGetSize(&texture->layout);
@@ -1325,7 +1362,7 @@ static void DKO_CommandMemoryNeeded(void *userData, DkCmdBuf cmd, size_t minimum
         return;
     }
     DKO_KeepChunk(cb, &chunk);
-    dkCmdBufAddMemory(cmd, chunk.block->memblock, chunk.offset, chunk.size);
+    dkCmdBufAddMemory(cmd, chunk.block->memblock, chunk.offset, chunk.size - DKO_CHUNK_SLACK);
 }
 
 static DkGpuAddr DKO_UniformSpace(DKO_CommandBuffer *cb, const void *data, Uint32 length, Uint32 *size)
@@ -1461,7 +1498,7 @@ static SDL_GPUCommandBuffer *DEKO3D_AcquireCommandBuffer(SDL_GPURenderer *driver
         return NULL;
     }
     DKO_KeepChunk(cb, &chunk);
-    dkCmdBufAddMemory(cb->cmd, chunk.block->memblock, chunk.offset, chunk.size);
+    dkCmdBufAddMemory(cb->cmd, chunk.block->memblock, chunk.offset, chunk.size - DKO_CHUNK_SLACK);
 
     // every command buffer starts with the descriptor sets bound
     dkCmdBufBindImageDescriptorSet(cb->cmd, renderer->imageDescriptors, DKO_MAX_IMAGE_DESCRIPTORS);
@@ -1540,6 +1577,10 @@ static void DEKO3D_BeginRenderPass(SDL_GPUCommandBuffer *commandBuffer, const SD
         }
     }
     dkCmdBufBindRenderTargets(cb->cmd, colorPointers, numColorTargets, depthPointer);
+
+    // Clears respect the scissor, which may still be the last pass's
+    DkScissor whole = { 0, 0, width, height };
+    dkCmdBufSetScissors(cb->cmd, 0, &whole, 1);
 
     for (Uint32 i = 0; i < numColorTargets; i++) {
         if (colorTargetInfos[i].load_op == SDL_GPU_LOADOP_CLEAR) {
@@ -1991,6 +2032,9 @@ static void DEKO3D_Blit(SDL_GPUCommandBuffer *commandBuffer, const SDL_GPUBlitIn
         DKO_View(&view, to, info->destination.mip_level, info->destination.layer_or_depth_plane, true);
         DkImageView const *views[1] = { &view };
         dkCmdBufBindRenderTargets(cb->cmd, views, 1, NULL);
+        DkScissor whole = { 0, 0, SDL_max(to->common.info.width >> info->destination.mip_level, 1u),
+                            SDL_max(to->common.info.height >> info->destination.mip_level, 1u) }; // clears respect it
+        dkCmdBufSetScissors(cb->cmd, 0, &whole, 1);
         dkCmdBufClearColorFloat(cb->cmd, 0, DkColorMask_RGBA, info->clear_color.r, info->clear_color.g, info->clear_color.b, info->clear_color.a);
     }
     DkImageRect fromRect = { info->source.x, info->source.y, 0, info->source.w, info->source.h, 1 };
