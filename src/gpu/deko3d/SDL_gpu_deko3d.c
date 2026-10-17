@@ -873,6 +873,7 @@ static Uint32 DKO_WriteImageDescriptor(DKO_Renderer *renderer, DKO_Texture *text
     SDL_UnlockMutex(renderer->stateLock);
     if (slot == ~0u) {
         SDL_SetError("deko3d: out of image descriptors");
+        SDL_LogError(SDL_LOG_CATEGORY_GPU, "deko3d: out of image descriptors (%u); the texture won't sample", DKO_MAX_IMAGE_DESCRIPTORS);
         return ~0u;
     }
     DkImageView view;
