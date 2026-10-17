@@ -121,8 +121,18 @@ typedef struct DKO_TransferBuffer
 {
     DKO_Alloc alloc;
     Uint32 size;
-    SDL_AtomicInt pendingUses; // command buffers that will read or write it
+    // Command buffers that will read or write the current backing. Cycling
+    // gives a new backing and a new generation; a use of an older one,
+    // finishing later, must not count against the new one.
+    SDL_AtomicInt pendingUses;
+    Uint32 generation;
 } DKO_TransferBuffer;
+
+typedef struct DKO_TransferUse
+{
+    DKO_TransferBuffer *transfer;
+    Uint32 generation;
+} DKO_TransferUse;
 
 typedef struct DKO_Texture
 {
@@ -216,7 +226,7 @@ typedef struct DKO_CommandBuffer
     DKO_Alloc uniformChunk;
     Uint32 uniformUsed;
 
-    DKO_TransferBuffer **transfers;
+    DKO_TransferUse *transfers;
     Uint32 numTransfers, transferCapacity;
     bool downloads;
 
@@ -863,8 +873,11 @@ static void *DEKO3D_MapTransferBuffer(SDL_GPURenderer *driverData, SDL_GPUTransf
         DKO_Alloc fresh;
         if (DKO_Allocate(renderer, DKO_HEAP_UPLOAD, transfer->size ? transfer->size : 16, 256, &fresh)) {
             DKO_DeferAlloc(renderer, &transfer->alloc);
+            SDL_LockMutex(renderer->stateLock); // against DKO_Recycle's check of the generation
             transfer->alloc = fresh;
+            transfer->generation++;
             SDL_SetAtomicInt(&transfer->pendingUses, 0);
+            SDL_UnlockMutex(renderer->stateLock);
         }
     }
     return DKO_Cpu(&transfer->alloc);
@@ -1407,9 +1420,13 @@ static DkGpuAddr DKO_UniformSpace(DKO_CommandBuffer *cb, const void *data, Uint3
 
 static void DKO_UseTransfer(DKO_CommandBuffer *cb, DKO_TransferBuffer *transfer)
 {
-    if (DKO_Reserve((void **)&cb->transfers, &cb->transferCapacity, cb->numTransfers + 1, sizeof(DKO_TransferBuffer *))) {
-        cb->transfers[cb->numTransfers++] = transfer;
+    if (DKO_Reserve((void **)&cb->transfers, &cb->transferCapacity, cb->numTransfers + 1, sizeof(DKO_TransferUse))) {
+        SDL_LockMutex(cb->renderer->stateLock);
+        cb->transfers[cb->numTransfers].transfer = transfer;
+        cb->transfers[cb->numTransfers].generation = transfer->generation;
+        cb->numTransfers++;
         SDL_AddAtomicInt(&transfer->pendingUses, 1);
+        SDL_UnlockMutex(cb->renderer->stateLock);
     }
 }
 
@@ -1431,7 +1448,10 @@ static void DKO_Recycle(DKO_Renderer *renderer, DKO_CommandBuffer *cb)
     cb->numChunks = 0;
     cb->uniformChunk.block = NULL;
     for (Uint32 i = 0; i < cb->numTransfers; i++) {
-        SDL_AddAtomicInt(&cb->transfers[i]->pendingUses, -1);
+        DKO_TransferUse *use = &cb->transfers[i];
+        if (use->generation == use->transfer->generation) { // an older backing's use counts for nothing now
+            SDL_AddAtomicInt(&use->transfer->pendingUses, -1);
+        }
     }
     cb->numTransfers = 0;
     DKO_ReleaseFenceReference(cb->fence);
