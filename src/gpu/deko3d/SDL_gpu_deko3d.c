@@ -2183,7 +2183,7 @@ static bool DEKO3D_ClaimWindow(SDL_GPURenderer *driverData, SDL_Window *window)
     data->window = window;
     data->width = (Uint32)w;
     data->height = (Uint32)h;
-    data->numImages = 2;
+    data->numImages = 3; // what Horizon gives anyway; the GPU never waits for an image while one is shown
 
     DkImage const *images[DKO_MAX_SWAPCHAIN_IMAGES];
     for (Uint32 i = 0; i < data->numImages; i++) {
