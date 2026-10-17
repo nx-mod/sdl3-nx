@@ -128,6 +128,14 @@ typedef struct DKO_TransferBuffer
     Uint32 generation;
 } DKO_TransferBuffer;
 
+typedef enum DKO_Work
+{
+    DKO_WORK_NONE, // nothing yet in this command buffer
+    DKO_WORK_GRAPHICS,
+    DKO_WORK_BLIT,
+    DKO_WORK_COPY
+} DKO_Work;
+
 typedef struct DKO_TransferUse
 {
     DKO_TransferBuffer *transfer;
@@ -238,6 +246,7 @@ typedef struct DKO_CommandBuffer
     DKO_ComputePipeline *compute;
     DkIdxFormat indexFormat;
     Uint32 indexCount; // indices the bound index buffer holds past its offset
+    DKO_Work lastWork; // the kind of the last pass, for the barrier before the next
     Uint8 stencilReference;
     Uint32 rwStorageTextureBase;
     Uint32 rwStorageBufferBase;
@@ -1525,6 +1534,7 @@ static SDL_GPUCommandBuffer *DEKO3D_AcquireCommandBuffer(SDL_GPURenderer *driver
     cb->compute = NULL;
     cb->indexFormat = DkIdxFormat_Uint16;
     cb->indexCount = 0;
+    cb->lastWork = DKO_WORK_NONE;
     cb->stencilReference = 0;
     cb->numResolves = 0;
     SDL_zero(cb->common);
@@ -1557,13 +1567,27 @@ static SDL_GPUCommandBuffer *DEKO3D_AcquireCommandBuffer(SDL_GPURenderer *driver
 
 // ---------------------------------------------------------------- passes
 
-static void DKO_PassBarrier(DKO_CommandBuffer *cb, bool copy)
+// SDL_GPU orders passes for the caller. A full barrier waits for every engine
+// and ends the command list's GPU entry (deko3d splits it to stop prefetch),
+// so one per pass stalled the GPU on every pass, and a frame of them plus a
+// screen of blits made more entries than one kickoff takes ("gpu channel
+// kickoff failed"). The copy engine runs beside the graphics engine, so work
+// on one side of it needs the full barrier; between graphics passes (3D,
+// compute, the 2D engine) waiting for idle and dropping the texture caches is
+// enough (nfsmw-nx's HowToDeko3d.md, 5.6), and blits in a row, which the 2D
+// engine runs in order, need nothing.
+static void DKO_PassBarrier(DKO_CommandBuffer *cb, DKO_Work work)
 {
-    // SDL_GPU orders passes for the caller: a full barrier between them, and
-    // around copies the caches CPU-written memory may be stale in
-    dkCmdBufBarrier(cb->cmd, DkBarrier_Full,
+    DKO_Work last = cb->lastWork;
+    cb->lastWork = work;
+    if (work == DKO_WORK_BLIT && last == DKO_WORK_BLIT) {
+        return;
+    }
+    // A command buffer's first work: an earlier one's copies may still run.
+    bool copyEngine = work == DKO_WORK_COPY || last == DKO_WORK_COPY || last == DKO_WORK_NONE;
+    dkCmdBufBarrier(cb->cmd, copyEngine ? DkBarrier_Full : DkBarrier_Fragments,
                     DkInvalidateFlags_Image | DkInvalidateFlags_Shader | DkInvalidateFlags_Descriptors |
-                        (copy ? DkInvalidateFlags_L2Cache : 0));
+                        (work == DKO_WORK_COPY ? DkInvalidateFlags_L2Cache : 0));
 }
 
 static void DKO_View(DkImageView *view, DKO_Texture *texture, Uint32 level, Uint32 layer, bool renderTarget)
@@ -1584,7 +1608,7 @@ static void DEKO3D_BeginRenderPass(SDL_GPUCommandBuffer *commandBuffer, const SD
                                    const SDL_GPUDepthStencilTargetInfo *depthStencilTargetInfo)
 {
     DKO_CommandBuffer *cb = (DKO_CommandBuffer *)commandBuffer;
-    DKO_PassBarrier(cb, false);
+    DKO_PassBarrier(cb, DKO_WORK_GRAPHICS);
 
     DkImageView colorViews[MAX_COLOR_TARGET_BINDINGS];
     DkImageView const *colorPointers[MAX_COLOR_TARGET_BINDINGS];
@@ -1883,7 +1907,7 @@ static void DEKO3D_BeginComputePass(SDL_GPUCommandBuffer *commandBuffer, const S
                                     Uint32 numStorageBufferBindings)
 {
     DKO_CommandBuffer *cb = (DKO_CommandBuffer *)commandBuffer;
-    DKO_PassBarrier(cb, false);
+    DKO_PassBarrier(cb, DKO_WORK_GRAPHICS);
     cb->compute = NULL;
     // bound after the read-only ones once the pipeline says how many those are;
     // kept until then
@@ -1983,7 +2007,7 @@ static void DKO_CopyPitch(DkCopyBuf *copy, SDL_GPUTextureFormat format, Uint32 p
 
 static void DEKO3D_BeginCopyPass(SDL_GPUCommandBuffer *commandBuffer)
 {
-    DKO_PassBarrier((DKO_CommandBuffer *)commandBuffer, true);
+    DKO_PassBarrier((DKO_CommandBuffer *)commandBuffer, DKO_WORK_COPY);
 }
 
 static void DEKO3D_EndCopyPass(SDL_GPUCommandBuffer *commandBuffer)
@@ -2102,7 +2126,11 @@ static void DEKO3D_GenerateMipmaps(SDL_GPUCommandBuffer *commandBuffer, SDL_GPUT
 static void DEKO3D_Blit(SDL_GPUCommandBuffer *commandBuffer, const SDL_GPUBlitInfo *info)
 {
     DKO_CommandBuffer *cb = (DKO_CommandBuffer *)commandBuffer;
-    DKO_PassBarrier(cb, false);
+    // A blit that clears first draws on the 3D engine; the rest are the 2D engine's
+    DKO_PassBarrier(cb, info->load_op == SDL_GPU_LOADOP_CLEAR ? DKO_WORK_GRAPHICS : DKO_WORK_BLIT);
+    if (info->load_op == SDL_GPU_LOADOP_CLEAR) {
+        cb->lastWork = DKO_WORK_BLIT; // the blit itself comes after the clear
+    }
     DKO_Texture *from = (DKO_Texture *)info->source.texture;
     DKO_Texture *to = (DKO_Texture *)info->destination.texture;
     if (info->load_op == SDL_GPU_LOADOP_CLEAR) {
